@@ -13,14 +13,16 @@ class CompactorReq(n: Int) extends Bundle {
   def count = Mux(tail === 0.U, n.U, tail) - head
 }
 
-class Compactor[T <: Data](pushN: Int, popN: Int, gen: => T, forward: Boolean)(implicit p: Parameters) extends Module {
+class Compactor[T <: Data](pushN: Int, popN: Int, gen: => T, forward: Boolean, hasDebugId: Boolean = false, unitName: String = "LMU")(implicit p: Parameters) extends Module {
   require (pushN >= popN)
   val io = IO(new Bundle {
     val push = Flipped(Decoupled(new CompactorReq(pushN)))
     val push_data = Input(Vec(pushN, gen))
+    val push_tag = Input(UInt(32.W))  // tag from LoadOrderBuffer or source
 
     val pop = Flipped(Decoupled(new CompactorReq(popN)))
     val pop_data = Output(Vec(popN, gen))
+    val cycle = Input(UInt(64.W))
   })
 
   val (push, push_data) = if (forward) {
@@ -54,6 +56,26 @@ class Compactor[T <: Data](pushN: Int, popN: Int, gen: => T, forward: Boolean)(i
 
   when (push.fire || io.pop.fire) {
     count := count +& Mux(push.fire, push.bits.count, 0.U) - Mux(io.pop.fire, io.pop.bits.count, 0.U)
+  }
+
+  when (push.fire) {
+    if (saturn.DebugConfig.enablePrints) {
+      if (unitName == "LMU") {
+        printf("time=%d [LMU->PUSH] tag=%d head=%d tail=%d push_count=%d\n", io.cycle, io.push_tag, push.bits.head, push.bits.tail, push.bits.count)
+      } else {
+        printf("time=%d [SMU->PUSH] tag=%d head=%d tail=%d push_count=%d\n", io.cycle, io.push_tag, push.bits.head, push.bits.tail, push.bits.count)
+      }
+    }
+  }
+  when (io.pop.fire) {
+    if (saturn.DebugConfig.enablePrints) {
+      if (hasDebugId) {
+        val dbgId = io.pop_data(0).asTypeOf(new MaskedByte).debug_id
+        printf("time=%d [LMU->POP] head=%d tail=%d pop_count=%d dbg=%d\n", io.cycle, io.pop.bits.head, io.pop.bits.tail, io.pop.bits.count, dbgId)
+      } else {
+        printf("time=%d [LMU->POP] head=%d tail=%d pop_count=%d\n", io.cycle, io.pop.bits.head, io.pop.bits.tail, io.pop.bits.count)
+      }
+    }
   }
 
   val push_elems = push_data

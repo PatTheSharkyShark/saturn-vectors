@@ -50,6 +50,33 @@ class StoreSequencer(implicit p: Parameters) extends Sequencer[StoreDataMicroOp]
       0.U)
     head := true.B
   } .elsewhen (io.iss.fire) {
+    // Debug: print a human-readable mnemonic for the issued store
+    val sewVal = MuxCase(32.U, Seq(
+      (inst.mem_elem_size === 0.U) -> 8.U,
+      (inst.mem_elem_size === 1.U) -> 16.U,
+      (inst.mem_elem_size === 2.U) -> 32.U,
+      (inst.mem_elem_size === 3.U) -> 64.U
+    ))
+    when (inst.store && inst.mop === mopUnit) {
+      if (saturn.DebugConfig.enablePrints) printf("time=%d [ISSUE][ST] rid=%d insn=vse%d.v sew=%d mop=%d store=%d vat=%d dbg=%d eidx=%d eg=%d tail=%d\n", io.cycle, Cat(inst.debug_id, eidx), sewVal, inst.mem_elem_size, inst.mop, inst.store, inst.vat, inst.debug_id, eidx, io.iss.bits.eidx, tail)
+    } .elsewhen (inst.store && inst.mop === mopStrided) {
+      if (saturn.DebugConfig.enablePrints) printf("time=%d [ISSUE][ST] insn=vsse%d.v sew=%d mop=%d store=%d vat=%d dbg=%d eidx=%d eg=%d tail=%d\n", io.cycle, sewVal, inst.mem_elem_size, inst.mop, inst.store, inst.vat, inst.debug_id, eidx, io.iss.bits.eidx, tail)
+    } .elsewhen (inst.store && inst.mop(0)) {
+      if (saturn.DebugConfig.enablePrints) printf("time=%d [ISSUE][ST] insn=vsuxei%d.v sew=%d mop=%d store=%d vat=%d dbg=%d eidx=%d eg=%d tail=%d\n", io.cycle, sewVal, inst.mem_elem_size, inst.mop, inst.store, inst.vat, inst.debug_id, eidx, io.iss.bits.eidx, tail)
+    } .otherwise {
+      if (saturn.DebugConfig.enablePrints) printf("time=%d [ISSUE][ST] insn=unknown sew=%d mop=%d store=%d vat=%d dbg=%d eidx=%d eg=%d tail=%d\n", io.cycle, inst.mem_elem_size, inst.mop, inst.store, inst.vat, inst.debug_id, eidx, io.iss.bits.eidx, tail)
+    }
+    when (tail) {
+      when (inst.store && inst.mop === mopUnit) {
+        if (saturn.DebugConfig.enablePrints) printf("time=%d [ISSUE][ST] LAST rid=%d insn=vse%d.v sew=%d mop=%d store=%d vat=%d dbg=%d eidx=%d\n", io.cycle, Cat(inst.debug_id, eidx), sewVal, inst.mem_elem_size, inst.mop, inst.store, inst.vat, inst.debug_id, eidx)
+      } .elsewhen (inst.store && inst.mop === mopStrided) {
+        if (saturn.DebugConfig.enablePrints) printf("time=%d [ISSUE][ST] LAST insn=vsse%d.v sew=%d mop=%d store=%d vat=%d dbg=%d eidx=%d\n", io.cycle, sewVal, inst.mem_elem_size, inst.mop, inst.store, inst.vat, inst.debug_id, eidx)
+      } .elsewhen (inst.store && inst.mop(0)) {
+        if (saturn.DebugConfig.enablePrints) printf("time=%d [ISSUE][ST] LAST insn=vsuxei%d.v sew=%d mop=%d store=%d vat=%d dbg=%d eidx=%d\n", io.cycle, sewVal, inst.mem_elem_size, inst.mop, inst.store, inst.vat, inst.debug_id, eidx)
+      } .otherwise {
+        if (saturn.DebugConfig.enablePrints) printf("time=%d [ISSUE][ST] LAST insn=unknown sew=%d mop=%d store=%d vat=%d dbg=%d eidx=%d\n", io.cycle, inst.mem_elem_size, inst.mop, inst.store, inst.vat, inst.debug_id, eidx)
+      }
+    }
     valid := !tail
     head := false.B
   }
@@ -97,6 +124,22 @@ class StoreSequencer(implicit p: Parameters) extends Sequencer[StoreDataMicroOp]
       }
     }
     when (sidx === inst.seg_nf) {
+      // Commit/advance: print commit info before updating with mnemonic
+      val sewValC = MuxCase(32.U, Seq(
+        (inst.mem_elem_size === 0.U) -> 8.U,
+        (inst.mem_elem_size === 1.U) -> 16.U,
+        (inst.mem_elem_size === 2.U) -> 32.U,
+        (inst.mem_elem_size === 3.U) -> 64.U
+      ))
+      when (inst.store && inst.mop === mopUnit) {
+        if (saturn.DebugConfig.enablePrints) printf("time=%d [COMMIT][ST] rid=%d insn=vse%d.v sew=%d mop=%d store=%d vat=%d dbg=%d eg=%d eidx=%d next_eidx=%d\n", io.cycle, Cat(inst.debug_id, eidx), sewValC, inst.mem_elem_size, inst.mop, inst.store, inst.vat, inst.debug_id, io.rvd.bits.eg, eidx, next_eidx)
+      } .elsewhen (inst.store && inst.mop === mopStrided) {
+        if (saturn.DebugConfig.enablePrints) printf("time=%d [COMMIT][ST] insn=vsse%d.v sew=%d mop=%d store=%d vat=%d dbg=%d eg=%d eidx=%d next_eidx=%d\n", io.cycle, sewValC, inst.mem_elem_size, inst.mop, inst.store, inst.vat, inst.debug_id, io.rvd.bits.eg, eidx, next_eidx)
+      } .elsewhen (inst.store && inst.mop(0)) {
+        if (saturn.DebugConfig.enablePrints) printf("time=%d [COMMIT][ST] insn=vsuxei%d.v sew=%d mop=%d store=%d vat=%d dbg=%d eg=%d eidx=%d next_eidx=%d\n", io.cycle, sewValC, inst.mem_elem_size, inst.mop, inst.store, inst.vat, inst.debug_id, io.rvd.bits.eg, eidx, next_eidx)
+      } .otherwise {
+        if (saturn.DebugConfig.enablePrints) printf("time=%d [COMMIT][ST] insn=unknown sew=%d mop=%d store=%d vat=%d dbg=%d eg=%d eidx=%d next_eidx=%d\n", io.cycle, inst.mem_elem_size, inst.mop, inst.store, inst.vat, inst.debug_id, io.rvd.bits.eg, eidx, next_eidx)
+      }
       sidx := 0.U
       eidx := next_eidx
     } .otherwise {

@@ -121,13 +121,26 @@ class VectorMemUnit(sgSize: Option[BigInt] = None)(implicit p: Parameters) exten
 
   val las = Module(new AddrGen)
   val lifq = Module(new LoadOrderBuffer(vParams.vlifqEntries, vParams.vlrobEntries))
-  val lcu = Module(new Compactor(mLenB, mLenB, UInt(8.W), true))
+  val lcu = Module(new Compactor(mLenB, mLenB, UInt(8.W), true, false, "LMU"))
   val lss = Module(new LoadSegmenter)
 
-  val scu = Module(new Compactor(mLenB, mLenB, new MaskedByte, false))
+  val scu = Module(new Compactor(mLenB, mLenB, new MaskedByte, false, true, "SMU"))
   val sss = Module(new StoreSegmenter)
   val sas = Module(new AddrGen)
   val sifq = Module(new DCEQueue(new IFQEntry, vParams.vsifqEntries))
+
+  // Global cycle counter for memory datapath debug timestamps
+  val cycle = RegInit(0.U(64.W))
+  cycle := cycle + 1.U
+
+  // Wire cycle into submodules that use it for prints
+  las.io.cycle := cycle
+  sas.io.cycle := cycle
+  lifq.io.cycle := cycle
+  lcu.io.cycle := cycle
+  lss.io.cycle := cycle
+  scu.io.cycle := cycle
+  sss.io.cycle := cycle
 
   val liq = Reg(Vec(vParams.vliqEntries, new LSIQEntry))
   val liq_valids    = RegInit(VecInit.fill(vParams.vliqEntries)(false.B))
@@ -172,10 +185,17 @@ class VectorMemUnit(sgSize: Option[BigInt] = None)(implicit p: Parameters) exten
     liq_las(liq_enq_ptr) := false.B
     ptrIncr(liq_enq_ptr, vParams.vliqEntries)
     liq_valids(liq_enq_ptr) := true.B
+    if (saturn.DebugConfig.enablePrints) {
+      printf("time=%d [VLIQ->ENQ] lsiq=%d dbg=%d vstart=%d base_off=0x%x\n",
+        cycle, liq_enq_ptr, io.enq.bits.debug_id, io.enq.bits.vstart, io.enq.bits.base_offset)
+    }
   }
   when (liq_las_fire) {
     ptrIncr(liq_las_ptr, vParams.vliqEntries)
     liq_las(liq_las_ptr) := true.B
+    if (saturn.DebugConfig.enablePrints) {
+      printf("time=%d [VLIQ->LAS] lsiq=%d dbg=%d\n", cycle, liq_las_ptr, liq(liq_las_ptr).op.debug_id)
+    }
   }
   when (liq_lss_fire) {
     ptrIncr(liq_lss_ptr, vParams.vliqEntries)
@@ -191,19 +211,32 @@ class VectorMemUnit(sgSize: Option[BigInt] = None)(implicit p: Parameters) exten
     siq_sas(siq_enq_ptr) := false.B
     ptrIncr(siq_enq_ptr, vParams.vsiqEntries)
     siq_valids(siq_enq_ptr) := true.B
+    if (saturn.DebugConfig.enablePrints) {
+      printf("time=%d [VSIQ->ENQ] siq=%d dbg=%d base_off=0x%x vl=%d\n",
+        cycle, siq_enq_ptr, io.enq.bits.debug_id, io.enq.bits.base_offset, io.enq.bits.vl)
+    }
   }
   when (siq_sss_fire) {
     ptrIncr(siq_sss_ptr, vParams.vsiqEntries)
     siq_sss(siq_sss_ptr) := true.B
+    if (saturn.DebugConfig.enablePrints) {
+      printf("time=%d [VSIQ->SSS] siq=%d dbg=%d\n", cycle, siq_sss_ptr, siq(siq_sss_ptr).op.debug_id)
+    }
   }
   when (siq_sas_fire) {
     ptrIncr(siq_sas_ptr, vParams.vsiqEntries)
     siq_sas(siq_sas_ptr) := true.B
+    if (saturn.DebugConfig.enablePrints) {
+      printf("time=%d [VSIQ->SAS] siq=%d dbg=%d\n", cycle, siq_sas_ptr, siq(siq_sas_ptr).op.debug_id)
+    }
   }
   when (siq_deq_fire) {
     ptrIncr(siq_deq_ptr, vParams.vsiqEntries)
     siq_valids(siq_deq_ptr) := false.B
     assert(siq_sas(siq_deq_ptr) || (siq_sas_fire && siq_sas_ptr === siq_deq_ptr))
+    if (saturn.DebugConfig.enablePrints) {
+      printf("time=%d [VSIQ->DEQ] siq=%d dbg=%d\n", cycle, siq_deq_ptr, siq(siq_deq_ptr).op.debug_id)
+    }
   }
 
   io.enq.ready := Mux(io.enq.bits.store, siq_enq_ready, liq_enq_ready)
@@ -306,6 +339,7 @@ class VectorMemUnit(sgSize: Option[BigInt] = None)(implicit p: Parameters) exten
   lcu.io.push.bits.head := lifq.io.deq.bits.head
   lcu.io.push.bits.tail := lifq.io.deq.bits.tail
   lcu.io.push_data := lifq.io.deq_data.asTypeOf(Vec(mLenB, UInt(8.W)))
+  lcu.io.push_tag := lifq.io.deq_tag
   lifq.io.deq.ready := lcu.io.push.ready
 
   sgas.foreach { sgas =>
@@ -315,6 +349,7 @@ class VectorMemUnit(sgSize: Option[BigInt] = None)(implicit p: Parameters) exten
       lcu.io.push.valid := sgas.io.load_resp.valid
       lcu.io.push.bits := sgas.io.load_resp.bits
       lcu.io.push_data := sgas.io.load_data
+      lcu.io.push_tag := 0.U  // scatter-gather path doesn't have tag mapping
     }
   }
 
@@ -331,8 +366,18 @@ class VectorMemUnit(sgSize: Option[BigInt] = None)(implicit p: Parameters) exten
   sss.io.op := siq(siq_sss_ptr).op
   scu.io.push <> sss.io.compactor
   scu.io.push_data := sss.io.compactor_data
-  sss.io.stdata <> Queue(io.vu.sdata, if (vParams.bufferStdata) 1 else 0)
+  scu.io.push_tag := 0.U  // store path doesn't use LROB tags
+  sss.io.stdata <> io.vu.sdata
   siq_sss_fire := sss.io.done
+
+  if (saturn.DebugConfig.enablePrints) {
+    when (scu.io.push.fire) {
+      printf("time=%d [SMU->PUSH] head=%d tail=%d dbg=%d\n", cycle, scu.io.push.bits.head, scu.io.push.bits.tail, sss.io.compactor_data(0).debug_id)
+    }
+    when (scu.io.pop.fire) {
+      printf("time=%d [SMU->POP] head=%d tail=%d dbg=%d\n", cycle, scu.io.pop.bits.head, scu.io.pop.bits.tail, scu.io.pop_data(0).debug_id)
+    }
+  }
 
   // Store address sequencing
   val sas_order_block = (0 until vParams.vliqEntries).map { i =>
@@ -371,6 +416,9 @@ class VectorMemUnit(sgSize: Option[BigInt] = None)(implicit p: Parameters) exten
   sas.io.tag <> store_rob.io.reserve
   store_rob.io.reserve.ready := sas.io.req.fire
 
+  // connect cycle counter to store reorder buffer for timestamped prints
+  store_rob.io.cycle := cycle
+
   sifq.io.enq.valid := store_req_q.io.deq.valid && scu.io.pop.ready && (store_req.ready || store_req_q.io.deq.bits.sifq.masked)
   sifq.io.enq.bits := store_req_q.io.deq.bits.sifq
 
@@ -403,6 +451,17 @@ class VectorMemUnit(sgSize: Option[BigInt] = None)(implicit p: Parameters) exten
   sifq.io.deq.ready := sifq.io.deq.bits.masked || store_rob.io.deq.valid
   store_rob.io.deq.ready := !sifq.io.deq.bits.masked && sifq.io.deq.valid
   when (store_rob.io.deq.valid) { assert(sifq.io.deq.valid) }
+  if (saturn.DebugConfig.enablePrints) {
+    when (store_rob.io.deq.fire) {
+      printf("time=%d [SSS->RESP] debug=%d lsiq=%d head=%d tail=%d last=%d\n",
+        cycle,
+        siq(sifq.io.deq.bits.lsiq_id).op.debug_id,
+        sifq.io.deq.bits.lsiq_id,
+        sifq.io.deq.bits.head,
+        sifq.io.deq.bits.tail,
+        sifq.io.deq.bits.last.asUInt)
+    }
+  }
   siq_deq_fire := sifq.io.deq.fire && sifq.io.deq.bits.last
 
   sgas.foreach { sgas =>
@@ -429,6 +488,23 @@ class VectorMemUnit(sgSize: Option[BigInt] = None)(implicit p: Parameters) exten
     io.dmem.store_req <> store_req
   }
   io.dmem.load_req.bits.mask := ~(0.U(mLenB.W))
+
+  // Debug prints for requests/responses on the VMU datapath
+  if (saturn.DebugConfig.enablePrints) {
+    when (io.dmem.load_req.fire) {
+      printf("time=%d [VMU->BUS] LOAD req tag=%d addr=0x%x\n", cycle, io.dmem.load_req.bits.tag, io.dmem.load_req.bits.addr)
+    }
+    when (io.dmem.store_req.fire) {
+      printf("time=%d [VMU->BUS] STORE req tag=%d addr=0x%x mask=0x%x\n", cycle, io.dmem.store_req.bits.tag, io.dmem.store_req.bits.addr, io.dmem.store_req.bits.mask)
+    }
+
+    when (io.dmem.load_resp.valid && io.dmem.load_resp.bits.tag =/= 0.U) {
+      printf("time=%d [BUS->VMU] LOAD resp tag=%d data=0x%x\n", cycle, io.dmem.load_resp.bits.tag, io.dmem.load_resp.bits.data)
+    }
+    when (io.dmem.store_ack.valid) {
+      printf("time=%d [BUS->VMU] STORE ack tag=%d\n", cycle, io.dmem.store_ack.bits.tag)
+    }
+  }
 
   io.busy := liq_valids.orR || siq_valids.orR
 }

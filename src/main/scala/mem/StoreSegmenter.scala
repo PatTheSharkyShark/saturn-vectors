@@ -17,9 +17,11 @@ class StoreSegmenter(implicit p: Parameters) extends CoreModule()(p) with HasVec
     val compactor = Decoupled(new CompactorReq(mLenB))
     val compactor_data = Output(Vec(mLenB, new MaskedByte))
     val stdata = Flipped(Decoupled(new VectorStoreData))
+    val cycle = Input(UInt(64.W))
   })
 
   val segbuf = Module(new StoreSegmentBuffer(vParams.doubleBufferSegments))
+  segbuf.io.cycle := io.cycle
 
   val r_eidx = Reg(UInt(log2Ceil(maxVLMax).W))
   val r_head = RegInit(true.B)

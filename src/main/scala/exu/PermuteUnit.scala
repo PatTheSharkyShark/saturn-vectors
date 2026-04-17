@@ -76,6 +76,15 @@ class PermuteUnit(implicit p: Parameters) extends PipelinedFunctionalUnit(1)(p) 
   val wmask = Mux(mvnrr, ~(0.U(dLenB.W)),
     Mux(compress, Mux(compress_bit, shifted_mask, 0.U), io.pipe(0).bits.wmask))
 
+  // local cycle counter for debug timestamps
+  val cycleCnt = RegInit(0.U(64.W))
+  cycleCnt := cycleCnt + 1.U
+
+  when (io.pipe(0).valid) {
+    printf("[PERMUTE-EXEC] time=%d func3=%d func6=%d compress=%b rgather=%b eidx=%d wvd_eg=%d\n",
+      cycleCnt, io.pipe(0).bits.funct3, io.pipe(0).bits.funct6,
+      compress, rgather, io.pipe(0).bits.eidx, io.pipe(0).bits.wvd_eg)
+  }
   io.scalar_write.valid := false.B
   io.scalar_write.bits := DontCare
   io.set_vxsat := false.B
@@ -83,6 +92,9 @@ class PermuteUnit(implicit p: Parameters) extends PipelinedFunctionalUnit(1)(p) 
   io.set_fflags.bits := DontCare
 
   io.write.valid := io.pipe(0).valid && (!compress || compress_bit)
+  when (io.write.valid) {
+    printf("[PERMUTE-WRITE] time=%d eg=%d mask=%b\n", cycleCnt, io.write.bits.eg, io.write.bits.mask)
+  }
   io.write.bits.eg := Mux(compress,
     getEgId(compress_wvd, compress_eidx, io.pipe(0).bits.rvs2_eew, false.B),
     io.pipe(0).bits.wvd_eg)
