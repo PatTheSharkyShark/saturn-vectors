@@ -21,6 +21,10 @@ class TLInterface(tagBits: Int)(implicit p: Parameters) extends LazyModule()(p) 
 
     val (out, edge) = node.out(0)
 
+    // local cycle counter for debug prints
+    val cycle = RegInit(0.U(64.W))
+    cycle := cycle + 1.U
+
     val widthBytes = edge.slave.beatBytes
     val offBits = log2Ceil(widthBytes)
 
@@ -55,6 +59,16 @@ class TLInterface(tagBits: Int)(implicit p: Parameters) extends LazyModule()(p) 
     io.resp.valid := out.d.valid
     io.resp.bits.data := out.d.bits.data
     io.resp.bits.tag := out.d.bits.source
+
+    if (saturn.DebugConfig.enablePrints) {
+      when (out.a.fire) {
+        printf("time=%d [TLIF->A] tag=%d addr=0x%x store=%d\n", cycle, io.req.bits.tag, io.req.bits.addr, io.req.bits.store)
+      }
+
+      when (out.d.fire) {
+        printf("time=%d [TLIF->D] tag=%d data=0x%x\n", cycle, out.d.bits.source, out.d.bits.data)
+      }
+    }
   }
 }
 

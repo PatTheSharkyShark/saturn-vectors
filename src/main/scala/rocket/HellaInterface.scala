@@ -42,6 +42,10 @@ class HellaCacheInterface(implicit p: Parameters) extends CoreModule()(p) with H
 
   val inflights = RegInit(0.U((1+dmemTagBits).W))
 
+  // local cycle counter for debug prints
+  val cycle = RegInit(0.U(64.W))
+  cycle := cycle + 1.U
+
   io.vec.load_req.ready        := hella_load_q.io.enq.ready
   hella_load_q.io.enq.valid       := io.vec.load_req.valid
   hella_load_q.io.enq.bits.addr   := io.vec.load_req.bits.addr
@@ -90,5 +94,20 @@ class HellaCacheInterface(implicit p: Parameters) extends CoreModule()(p) with H
   val store_deq = hella_store.resp.fire
   when (load_enq || store_enq || load_deq || store_deq) {
     inflights := inflights + (load_enq +& store_enq) - (load_deq +& store_deq)
+  }
+
+  if (saturn.DebugConfig.enablePrints) {
+    when (load_enq) {
+      printf("time=%d [HELLA->ENQ] load tag=%d addr=0x%x\n", cycle, hella_load_q.io.enq.bits.tag, hella_load_q.io.enq.bits.addr)
+    }
+    when (store_enq) {
+      printf("time=%d [HELLA->ENQ] store tag=%d addr=0x%x\n", cycle, hella_store_q.io.enq.bits.tag, hella_store_q.io.enq.bits.addr)
+    }
+    when (load_deq) {
+      printf("time=%d [HELLA->DEQ] load tag=%d data=0x%x\n", cycle, hella_load.resp.bits.tag, hella_load.resp.bits.data_raw)
+    }
+    when (store_deq) {
+      printf("time=%d [HELLA->DEQ] store tag=%d\n", cycle, hella_store.resp.bits.tag)
+    }
   }
 }

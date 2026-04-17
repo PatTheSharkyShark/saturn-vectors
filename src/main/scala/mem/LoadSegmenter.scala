@@ -21,9 +21,11 @@ class LoadSegmenter(implicit p: Parameters) extends CoreModule()(p) with HasVect
       val data = UInt(mLen.W)
       val debug_id = UInt(debugIdSz.W)
     })
+    val cycle = Input(UInt(64.W))
   })
 
   val segbuf = Module(new LoadSegmentBuffer(vParams.doubleBufferSegments))
+  segbuf.io.cycle := io.cycle
 
   val r_eidx = Reg(UInt(log2Ceil(maxVLMax).W))
   val r_head = RegInit(true.B)
@@ -49,6 +51,10 @@ class LoadSegmenter(implicit p: Parameters) extends CoreModule()(p) with HasVect
     io.compactor.valid := io.valid && segbuf.io.in.ready
     io.compactor.bits.head := sidx << mem_size
     io.compactor.bits.tail := Mux(sidx_tail, (io.op.nf +& 1.U) << mem_size, 0.U)
+  }
+
+  when (io.compactor.fire) {
+    if (saturn.DebugConfig.enablePrints) printf("time=%d [LSS->COMP] eidx_head=%d eidx_tail=%d op_dbg=%d\n", io.cycle, io.compactor.bits.head, io.compactor.bits.tail, io.op.debug_id)
   }
 
   segbuf.io.in.valid := io.valid && io.op.seg_nf =/= 0.U && io.compactor.ready
@@ -89,5 +95,8 @@ class LoadSegmenter(implicit p: Parameters) extends CoreModule()(p) with HasVect
     r_head := eidx_tail
     r_eidx := next_eidx
     io.done := eidx_tail
+    when (io.resp.fire) {
+      if (saturn.DebugConfig.enablePrints) printf("time=%d [LSS->RESP] debug=%d eidx=%d last=%d\n", io.cycle, io.resp.bits.debug_id, r_eidx, io.resp.bits.debug_id)
+    }
   }
 }

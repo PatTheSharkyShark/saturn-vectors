@@ -22,7 +22,7 @@ class ExecuteSequencerIO(maxDepth: Int, nFUs: Int)(implicit p: Parameters) exten
   val acc_ready = Output(Bool())
 }
 
-class ExecuteSequencer(supported_insns: Seq[VectorInstruction], maxPipeDepth: Int, nFUs: Int)(implicit p: Parameters) extends Sequencer[ExecuteMicroOp]()(p) {
+class ExecuteSequencer(supported_insns: Seq[VectorInstruction], maxPipeDepth: Int, nFUs: Int, seqName: String, fuNames: Seq[String])(implicit p: Parameters) extends Sequencer[ExecuteMicroOp]()(p) {
   def usesPerm = supported_insns.count(_.props.contains(UsesGatherUnit.Y)) > 0
   def usesAcc = supported_insns.count(_.props.contains(Reduction.Y)) > 0
   def usesRvd = supported_insns.count(_.props.contains(ReadsVD.Y)) > 0
@@ -58,6 +58,8 @@ class ExecuteSequencer(supported_insns: Seq[VectorInstruction], maxPipeDepth: In
   val pipe_stages  = Reg(UInt(log2Ceil(maxPipeDepth).W))
   val fu_sel       = Reg(UInt(nFUs.W))
   val eff_vl       = Reg(UInt((1+log2Ceil(maxVLMax)).W))
+  val alu_issue_cnts = RegInit(VecInit(Seq.fill(nFUs)(0.U(64.W))))
+  val alu_total_issued = RegInit(0.U(64.W))
   val next_eidx    = Reg(UInt((1+log2Ceil(maxVLMax)).W))
   val rgatherei16  = Reg(Bool())
   val mvnrr        = Reg(Bool())
@@ -66,6 +68,7 @@ class ExecuteSequencer(supported_insns: Seq[VectorInstruction], maxPipeDepth: In
   val eidx      = Reg(UInt(log2Ceil(maxVLMax).W))
   val acc_fold  = Reg(Bool())
   val acc_fold_id = Reg(UInt(log2Ceil(dLenB).W))
+  val cycle = RegInit(0.U(64.W))
 
   val compress = inst.opmf6 === OPMFunct6.compress && usesCompress.B
   val acc_copy = (vd_eew === 3.U && (dLenB == 8).B) || elementwise
@@ -86,6 +89,7 @@ class ExecuteSequencer(supported_insns: Seq[VectorInstruction], maxPipeDepth: In
   val tail      = Mux(inst.reduction && usesAcc.B, acc_fold && acc_last, eidx_tail)
 
   io.dis.ready := (!valid || (tail && io.iss.fire)) && !io.dis_stall
+  cycle := cycle + 1.U
 
   when (io.dis.fire) {
     val dis_inst = io.dis.bits
@@ -187,9 +191,84 @@ class ExecuteSequencer(supported_insns: Seq[VectorInstruction], maxPipeDepth: In
         dis_next_eidx, dis_vlmax - dis_slide_offset) << dis_sew
       )(dLenOffBits-1,0)
     )
+
   } .elsewhen (io.iss.fire) {
+    // update issuance counters per-FU (count this issue)
+    val alu_total_next = alu_total_issued + 1.U
+    val alu_count_next = alu_issue_cnts(fu_sel) + 1.U
+    val alu_util = alu_count_next * 100.U / alu_total_next
+    alu_total_issued := alu_total_next
+    alu_issue_cnts(fu_sel) := alu_count_next
+
+    val fu_idx = PriorityEncoder(fu_sel)
+    val fu_count = nFUs.U
+
     valid := !tail
     head := false.B
+    // Check for RAW hazard (data chaining opportunity)
+    val vs1_read_oh_tmp = Mux(renv1, UIntToOH(io.rvs1.bits.eg), 0.U)
+    val vs2_read_oh_tmp = Mux(renv2, UIntToOH(io.rvs2.bits.eg), 0.U)
+    val vd_read_oh_tmp = Mux(renvd, UIntToOH(io.rvd.bits.eg), 0.U)
+    val vm_read_oh_tmp = Mux(renvm, UIntToOH(io.rvm.bits.eg), 0.U)
+    val raw_hazard_tmp = ((vs1_read_oh_tmp | vs2_read_oh_tmp | vd_read_oh_tmp | vm_read_oh_tmp) & io.older_writes) =/= 0.U
+    val chain_flag = Mux(raw_hazard_tmp, 1.U, 0.U)
+    
+    // Encode instruction type as UInt for printing
+    val insn_id = Mux(io.iss.bits.funct3 === OPIVV && io.iss.bits.funct6 === OPIFunct6.add.litValue.U, 1.U,
+      Mux(io.iss.bits.funct3 === OPIVV && io.iss.bits.funct6 === OPIFunct6.sub.litValue.U, 2.U,
+      Mux(io.iss.bits.funct3 === OPIVV && io.iss.bits.funct6 === OPIFunct6.and.litValue.U, 3.U,
+      Mux(io.iss.bits.funct3 === OPIVV && io.iss.bits.funct6 === OPIFunct6.or.litValue.U, 4.U,
+      Mux(io.iss.bits.funct3 === OPIVV && io.iss.bits.funct6 === OPIFunct6.xor.litValue.U, 5.U,
+      Mux(io.iss.bits.funct3 === OPIVV && io.iss.bits.funct6 === OPIFunct6.mseq.litValue.U, 6.U,
+      Mux(io.iss.bits.funct3 === OPIVV && io.iss.bits.funct6 === OPIFunct6.msne.litValue.U, 7.U,
+      Mux(io.iss.bits.funct3 === OPIVX && io.iss.bits.funct6 === OPIFunct6.msgt.litValue.U, 8.U,
+      Mux(io.iss.bits.funct3 === OPIVV && io.iss.bits.funct6 === OPIFunct6.slideup.litValue.U, 9.U,
+      Mux(io.iss.bits.funct3 === OPIVV && io.iss.bits.funct6 === OPIFunct6.slidedown.litValue.U, 10.U,
+      Mux(io.iss.bits.funct3 === OPIVV && io.iss.bits.funct6 === OPIFunct6.rgather.litValue.U, 11.U,
+      Mux(io.iss.bits.funct3 === OPIVX && io.iss.bits.funct6 === OPIFunct6.rgather.litValue.U, 12.U,
+      Mux(io.iss.bits.funct3 === OPIVI && io.iss.bits.funct6 === OPIFunct6.rgather.litValue.U, 13.U,
+      Mux(io.iss.bits.funct6 === OPMFunct6.mul.litValue.U, 14.U,
+      0.U  // unknown
+    )))))))))))))) 
+    
+    // Print per-FU name by branching on the one-hot selection so the correct
+    // literal name can be passed to printf at runtime.
+    for (i <- 0 until nFUs) {
+      when(fu_sel(i)) {
+        val fu_name = if (i < fuNames.length) fuNames(i) else "FU"
+        when(insn_id === 1.U) {
+          printf(s"[ISSUE][$seqName] time=%d vadd.vv   eidx=%d vs1=%d vs2=%d rd=%d chain=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, eidx, io.iss.bits.rs1, io.iss.bits.rs2, io.iss.bits.rd, chain_flag, fu_idx, fu_count, alu_util, alu_total_issued)
+        } .elsewhen(insn_id === 2.U) {
+          printf(s"[ISSUE][$seqName] time=%d vsub.vv   eidx=%d vs1=%d vs2=%d rd=%d chain=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, eidx, io.iss.bits.rs1, io.iss.bits.rs2, io.iss.bits.rd, chain_flag, fu_idx, fu_count, alu_util, alu_total_issued)
+        } .elsewhen(insn_id === 3.U) {
+          printf(s"[ISSUE][$seqName] time=%d vand.vv   eidx=%d vs1=%d vs2=%d rd=%d chain=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, eidx, io.iss.bits.rs1, io.iss.bits.rs2, io.iss.bits.rd, chain_flag, fu_idx, fu_count, alu_util, alu_total_issued)
+        } .elsewhen(insn_id === 4.U) {
+          printf(s"[ISSUE][$seqName] time=%d vor.vv    eidx=%d vs1=%d vs2=%d rd=%d chain=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, eidx, io.iss.bits.rs1, io.iss.bits.rs2, io.iss.bits.rd, chain_flag, fu_idx, fu_count, alu_util, alu_total_issued)
+        } .elsewhen(insn_id === 5.U) {
+          printf(s"[ISSUE][$seqName] time=%d vxor.vv   eidx=%d vs1=%d vs2=%d rd=%d chain=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, eidx, io.iss.bits.rs1, io.iss.bits.rs2, io.iss.bits.rd, chain_flag, fu_idx, fu_count, alu_util, alu_total_issued)
+        } .elsewhen(insn_id === 6.U) {
+          printf(s"[ISSUE][$seqName] time=%d vmseq.vv  eidx=%d vs1=%d vs2=%d rd=%d chain=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, eidx, io.iss.bits.rs1, io.iss.bits.rs2, io.iss.bits.rd, chain_flag, fu_idx, fu_count, alu_util, alu_total_issued)
+        } .elsewhen(insn_id === 7.U) {
+          printf(s"[ISSUE][$seqName] time=%d vmsne.vv  eidx=%d vs1=%d vs2=%d rd=%d chain=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, eidx, io.iss.bits.rs1, io.iss.bits.rs2, io.iss.bits.rd, chain_flag, fu_idx, fu_count, alu_util, alu_total_issued)
+        } .elsewhen(insn_id === 8.U) {
+          printf(s"[ISSUE][$seqName] time=%d vmsgt.vx  eidx=%d vs1=%d rs2=%d rd=%d chain=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, eidx, io.iss.bits.rs1, io.iss.bits.rs2, io.iss.bits.rd, chain_flag, fu_idx, fu_count, alu_util, alu_total_issued)
+        } .elsewhen(insn_id === 9.U) {
+          printf(s"[ISSUE][$seqName] time=%d vslideup.vv eidx=%d vs1=%d vs2=%d rd=%d chain=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, eidx, io.iss.bits.rs1, io.iss.bits.rs2, io.iss.bits.rd, chain_flag, fu_idx, fu_count, alu_util, alu_total_issued)
+        } .elsewhen(insn_id === 10.U) {
+          printf(s"[ISSUE][$seqName] time=%d vslidedown.vv eidx=%d vs1=%d vs2=%d rd=%d chain=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, eidx, io.iss.bits.rs1, io.iss.bits.rs2, io.iss.bits.rd, chain_flag, fu_idx, fu_count, alu_util, alu_total_issued)
+        } .elsewhen(insn_id === 11.U) {
+          printf(s"[ISSUE][$seqName] time=%d vrgather.vv eidx=%d vs1=%d vs2=%d rd=%d chain=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, eidx, io.iss.bits.rs1, io.iss.bits.rs2, io.iss.bits.rd, chain_flag, fu_idx, fu_count, alu_util, alu_total_issued)
+        } .elsewhen(insn_id === 12.U) {
+          printf(s"[ISSUE][$seqName] time=%d vrgather.vx eidx=%d vs1=%d rs2=%d rd=%d chain=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, eidx, io.iss.bits.rs1, io.iss.bits.rs2, io.iss.bits.rd, chain_flag, fu_idx, fu_count, alu_util, alu_total_issued)
+        } .elsewhen(insn_id === 13.U) {
+          printf(s"[ISSUE][$seqName] time=%d vrgather.vi eidx=%d vs1=%d imm=%d rd=%d chain=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, eidx, io.iss.bits.rs1, io.iss.bits.rs2, io.iss.bits.rd, chain_flag, fu_idx, fu_count, alu_util, alu_total_issued)
+        } .elsewhen(insn_id === 14.U) {
+          printf(s"[ISSUE][$seqName] time=%d vmul.vv   eidx=%d vs1=%d vs2=%d rd=%d chain=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, eidx, io.iss.bits.rs1, io.iss.bits.rs2, io.iss.bits.rd, chain_flag, fu_idx, fu_count, alu_util, alu_total_issued)
+        } .otherwise {
+          printf(s"[ISSUE][$seqName] time=%d unknown   eidx=%d vs1=%d vs2=%d rd=%d chain=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, eidx, io.iss.bits.rs1, io.iss.bits.rs2, io.iss.bits.rd, chain_flag, fu_idx, fu_count, alu_util, alu_total_issued)
+        }
+      }
+    }
   }
 
   io.vat := inst.vat
@@ -243,6 +322,66 @@ class ExecuteSequencer(supported_insns: Seq[VectorInstruction], maxPipeDepth: In
   io.pipe_write_req.pipe_depth := pipe_stages
   io.pipe_write_req.oldest := oldest
   io.pipe_write_req.fire := io.iss.fire
+  when (io.pipe_write_req.fire) {
+    // debug: commit/write request issued
+    val insn_id_commit = Mux(io.iss.bits.funct3 === OPIVV && io.iss.bits.funct6 === OPIFunct6.add.litValue.U, 1.U,
+      Mux(io.iss.bits.funct3 === OPIVV && io.iss.bits.funct6 === OPIFunct6.sub.litValue.U, 2.U,
+      Mux(io.iss.bits.funct3 === OPIVV && io.iss.bits.funct6 === OPIFunct6.and.litValue.U, 3.U,
+      Mux(io.iss.bits.funct3 === OPIVV && io.iss.bits.funct6 === OPIFunct6.or.litValue.U, 4.U,
+      Mux(io.iss.bits.funct3 === OPIVV && io.iss.bits.funct6 === OPIFunct6.xor.litValue.U, 5.U,
+      Mux(io.iss.bits.funct3 === OPIVV && io.iss.bits.funct6 === OPIFunct6.mseq.litValue.U, 6.U,
+      Mux(io.iss.bits.funct3 === OPIVV && io.iss.bits.funct6 === OPIFunct6.msne.litValue.U, 7.U,
+      Mux(io.iss.bits.funct3 === OPIVX && io.iss.bits.funct6 === OPIFunct6.msgt.litValue.U, 8.U,
+      Mux(io.iss.bits.funct3 === OPIVV && io.iss.bits.funct6 === OPIFunct6.slideup.litValue.U, 9.U,
+      Mux(io.iss.bits.funct3 === OPIVV && io.iss.bits.funct6 === OPIFunct6.slidedown.litValue.U, 10.U,
+      Mux(io.iss.bits.funct3 === OPIVV && io.iss.bits.funct6 === OPIFunct6.rgather.litValue.U, 11.U,
+      Mux(io.iss.bits.funct3 === OPIVX && io.iss.bits.funct6 === OPIFunct6.rgather.litValue.U, 12.U,
+      Mux(io.iss.bits.funct3 === OPIVI && io.iss.bits.funct6 === OPIFunct6.rgather.litValue.U, 13.U,
+      Mux(io.iss.bits.funct6 === OPMFunct6.mul.litValue.U, 14.U,
+      0.U  // unknown
+    )))))))))))))) 
+    
+    val commit_alu_util = alu_issue_cnts(fu_sel) * 100.U / Mux(alu_total_issued === 0.U, 1.U, alu_total_issued)
+    val commit_fu_idx = PriorityEncoder(fu_sel)
+    val commit_fu_count = nFUs.U
+
+    for (i <- 0 until nFUs) {
+      when(fu_sel(i)) {
+        val fu_name = if (i < fuNames.length) fuNames(i) else "FU"
+        when(insn_id_commit === 1.U) {
+          printf(s"[COMMIT][$seqName] time=%d vadd.vv   wvd_eg=%d eidx=%d rd=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, wvd_eg, eidx, io.iss.bits.rd, commit_fu_idx, commit_fu_count, commit_alu_util, alu_total_issued)
+        } .elsewhen(insn_id_commit === 2.U) {
+          printf(s"[COMMIT][$seqName] time=%d vsub.vv   wvd_eg=%d eidx=%d rd=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, wvd_eg, eidx, io.iss.bits.rd, commit_fu_idx, commit_fu_count, commit_alu_util, alu_total_issued)
+        } .elsewhen(insn_id_commit === 3.U) {
+          printf(s"[COMMIT][$seqName] time=%d vand.vv   wvd_eg=%d eidx=%d rd=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, wvd_eg, eidx, io.iss.bits.rd, commit_fu_idx, commit_fu_count, commit_alu_util, alu_total_issued)
+        } .elsewhen(insn_id_commit === 4.U) {
+          printf(s"[COMMIT][$seqName] time=%d vor.vv    wvd_eg=%d eidx=%d rd=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, wvd_eg, eidx, io.iss.bits.rd, commit_fu_idx, commit_fu_count, commit_alu_util, alu_total_issued)
+        } .elsewhen(insn_id_commit === 5.U) {
+          printf(s"[COMMIT][$seqName] time=%d vxor.vv   wvd_eg=%d eidx=%d rd=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, wvd_eg, eidx, io.iss.bits.rd, commit_fu_idx, commit_fu_count, commit_alu_util, alu_total_issued)
+        } .elsewhen(insn_id_commit === 6.U) {
+          printf(s"[COMMIT][$seqName] time=%d vmseq.vv  wvd_eg=%d eidx=%d rd=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, wvd_eg, eidx, io.iss.bits.rd, commit_fu_idx, commit_fu_count, commit_alu_util, alu_total_issued)
+        } .elsewhen(insn_id_commit === 7.U) {
+          printf(s"[COMMIT][$seqName] time=%d vmsne.vv  wvd_eg=%d eidx=%d rd=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, wvd_eg, eidx, io.iss.bits.rd, commit_fu_idx, commit_fu_count, commit_alu_util, alu_total_issued)
+        } .elsewhen(insn_id_commit === 8.U) {
+          printf(s"[COMMIT][$seqName] time=%d vmsgt.vx  wvd_eg=%d eidx=%d rd=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, wvd_eg, eidx, io.iss.bits.rd, commit_fu_idx, commit_fu_count, commit_alu_util, alu_total_issued)
+        } .elsewhen(insn_id_commit === 9.U) {
+          printf(s"[COMMIT][$seqName] time=%d vslideup.vv wvd_eg=%d eidx=%d rd=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, wvd_eg, eidx, io.iss.bits.rd, commit_fu_idx, commit_fu_count, commit_alu_util, alu_total_issued)
+        } .elsewhen(insn_id_commit === 10.U) {
+          printf(s"[COMMIT][$seqName] time=%d vslidedown.vv wvd_eg=%d eidx=%d rd=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, wvd_eg, eidx, io.iss.bits.rd, commit_fu_idx, commit_fu_count, commit_alu_util, alu_total_issued)
+        } .elsewhen(insn_id_commit === 11.U) {
+          printf(s"[COMMIT][$seqName] time=%d vrgather.vv wvd_eg=%d eidx=%d rd=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, wvd_eg, eidx, io.iss.bits.rd, commit_fu_idx, commit_fu_count, commit_alu_util, alu_total_issued)
+        } .elsewhen(insn_id_commit === 12.U) {
+          printf(s"[COMMIT][$seqName] time=%d vrgather.vx wvd_eg=%d eidx=%d rd=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, wvd_eg, eidx, io.iss.bits.rd, commit_fu_idx, commit_fu_count, commit_alu_util, alu_total_issued)
+        } .elsewhen(insn_id_commit === 13.U) {
+          printf(s"[COMMIT][$seqName] time=%d vrgather.vi wvd_eg=%d eidx=%d rd=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, wvd_eg, eidx, io.iss.bits.rd, commit_fu_idx, commit_fu_count, commit_alu_util, alu_total_issued)
+        } .elsewhen(insn_id_commit === 14.U) {
+          printf(s"[COMMIT][$seqName] time=%d vmul.vv   wvd_eg=%d eidx=%d rd=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, wvd_eg, eidx, io.iss.bits.rd, commit_fu_idx, commit_fu_count, commit_alu_util, alu_total_issued)
+        } .otherwise {
+          printf(s"[COMMIT][$seqName] time=%d unknown   wvd_eg=%d eidx=%d rd=%d alu=%d/%d(${fu_name}) util=%d%% total=%d\n", cycle, wvd_eg, eidx, io.iss.bits.rd, commit_fu_idx, commit_fu_count, commit_alu_util, alu_total_issued)
+        }
+      }
+    }
+  }
 
   when (compress) { // The destination is not known at this poit
     io.pipe_write_req.bank_sel := ~(0.U(vParams.vrfBanking.W))

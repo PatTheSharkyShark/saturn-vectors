@@ -1,0 +1,26 @@
+
+=== DRAM STABLE (slides + vrgather.vx) ===
+vslideup.vx    offset=4:    75 cyc
+vslidedown.vx  offset=4:    45 cyc
+vslide1up.vx   xs1=99:      48 cyc
+vslide1down.vx xs1=99:      45 cyc
+vrgather.vx    index=7:     43 cyc
+
+=== TCM STABLE (slides + vrgather.vx) ===
+vslideup.vx    offset=4:    35 cyc
+vslidedown.vx  offset=4:    35 cyc
+vslide1up.vx   xs1=99:      34 cyc
+vslide1down.vx xs1=99:      35 cyc
+vrgather.vx    index=7:     33 cyc
+
+=== DRAM RISKY (gather.vv / compress / reduce) ===
+[CHK] vcompress.vm ...
+%Warning: System has stack size 8192 kb which may be too small; suggest 'ulimit -c 17550' or larger
+[UART] UART0 is here (stdin/stdout).
+*** FAILED *** (tohost = 1337)
+[654935000] %Error: TestHarness.sv:99: Assertion failed in TOP.TestDriver.testHarness: Assertion failed: *** FAILED *** (exit code =       1337)
+
+    at SimTSI.scala:21 assert(!error, "*** FAILED *** (exit code = %%d)\n", exit >> 1.U)
+
+%Error: /home/jia_z/workspace/chipyard/sims/verilator/generated-src/chipyard.harness.TestHarness.DSPV512D128ShuttleConfig/gen-collateral/TestHarness.sv:99: Verilog $stop
+Aborting...

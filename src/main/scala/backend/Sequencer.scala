@@ -15,6 +15,9 @@ class SequencerIO[T <: Data](issType: T)(implicit p: Parameters) extends CoreBun
   val seq_hazard = Output(Valid(new SequencerHazard))
   val vat = Output(UInt(vParams.vatSz.W))
 
+  // Cycle counter for debug prints
+  val cycle = Input(UInt(64.W))
+
   // Consumes older reads/writes
   val older_writes = Input(UInt(egsTotal.W))
   val older_reads  = Input(UInt(egsTotal.W))

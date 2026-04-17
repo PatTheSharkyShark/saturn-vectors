@@ -37,6 +37,11 @@ class GatherUnit(implicit p: Parameters) extends CoreModule()(p) with HasVectorP
   val slide_buffer = Module(new Compactor(dLenB, dLenB, UInt(8.W), false))
   val eidx_buffer = Module(new Queue(UInt(64.W), 2))
 
+  // local cycle counter for gather unit compactor timestamps
+  val gather_cycle = RegInit(0.U(64.W))
+  gather_cycle := gather_cycle + 1.U
+  slide_buffer.io.cycle := gather_cycle
+
   io.vps.ready := q.io.enq.ready
   q.io.enq.valid := io.vps.valid && !io.vps.bits.vmu
   q.io.enq.bits := io.vps.bits
@@ -50,6 +55,7 @@ class GatherUnit(implicit p: Parameters) extends CoreModule()(p) with HasVectorP
     q.io.deq.bits.vl << q.io.deq.bits.rvs2_eew,
     0.U)
   slide_buffer.io.push_data := q.io.deq.bits.rvs2_data.asTypeOf(Vec(dLenB, UInt(8.W)))
+  slide_buffer.io.push_tag := 0.U
 
   eidx_buffer.io.enq.valid := q.io.deq.valid && !q.io.deq.bits.slide
   eidx_buffer.io.enq.bits := extractElem(q.io.deq.bits.rvs2_data, q.io.deq.bits.rvs2_eew, q.io.deq.bits.eidx)

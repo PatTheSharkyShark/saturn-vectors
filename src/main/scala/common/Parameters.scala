@@ -69,6 +69,12 @@ object VectorParams {
     issStructure = VectorIssueStructure.MultiMAC
   )
 
+  // multiMACFMAParams:
+  // Combined structure: MultiMAC on integer side, MultiFMA on FP side
+  def multiMACFMAParams = genParams.copy(
+    issStructure = VectorIssueStructure.MultiMACFMA
+  )
+
   // dmaParams:
   // For a vector unit that only does memcpys, and no arithmetic
   def dmaParams = VectorParams(
@@ -294,6 +300,33 @@ object VectorIssueStructure {
         depth = params.vxissqEntries,
         seqs = Seq(
           VXSequencerParams("fp", allFPFUs(params.fmaPipeDepth, params.useScalarFPFMA, params.useElementwiseFP64))
+        )
+      )
+      Seq(int_path, fp_path)
+    }
+  }
+
+  case object MultiMACFMA extends VectorIssueStructure {
+    def generate(params: VectorParams) = {
+      require(!params.useIterativeIMul && params.useSegmentedIMul)
+      require(!params.useScalarFPFMA)
+      val int_path = VXIssuePathParams(
+        name = "int",
+        depth = params.vxissqEntries,
+        seqs = Seq(
+          VXSequencerParams("int0", integerFUs(false) ++ integerMAC(params.imaPipeDepth, true)),
+          VXSequencerParams("int1", integerALUs ++ integerMAC(params.imaPipeDepth, true))
+        )
+      )
+      val fp_path = VXIssuePathParams(
+        name = "fp",
+        depth = params.vxissqEntries,
+        seqs = Seq(
+          VXSequencerParams("fp0",
+            allFPFUs(params.fmaPipeDepth, params.useScalarFPFMA, params.useElementwiseFP64) ++
+            (if (params.useIterativeIMul) Nil else integerMAC(params.imaPipeDepth, params.useSegmentedIMul))
+          ),
+          VXSequencerParams("fp1", fpFMA(params.fmaPipeDepth, params.useElementwiseFP64))
         )
       )
       Seq(int_path, fp_path)

@@ -11,7 +11,7 @@ import freechips.rocketchip.diplomacy._
 
 import saturn.common._
 import saturn.backend.{VectorBackend}
-import saturn.mem.{TLSplitInterface, VectorMemUnit}
+import saturn.mem.{TLSplitInterface, SGTLInterface, VectorMemUnit}
 import saturn.frontend.{VectorDispatcher}
 
 class SaturnRocketUnit(implicit p: Parameters) extends RocketVectorUnit()(p) with HasVectorParams with HasCoreParameters {
@@ -25,25 +25,38 @@ class SaturnRocketUnit(implicit p: Parameters) extends RocketVectorUnit()(p) wit
   }
 
   val tl_if = LazyModule(new TLSplitInterface)
+  val sgNode = p(RocketSGTCMKey).map { _ => TLIdentityNode() }
   atlNode := TLBuffer(vParams.tlBuffer) := TLWidthWidget(mLenB) := tl_if.node
+
+  val sg_if = sgNode.map { n =>
+    val sg_if = LazyModule(new SGTLInterface)
+    n :=* sg_if.node
+    sg_if
+  }
 
   override lazy val module = new SaturnRocketImpl
   class SaturnRocketImpl extends RocketVectorUnitModuleImp(this) with HasVectorParams with HasCoreParameters {
 
+    val sgSize = p(RocketSGTCMKey).map(_.size).getOrElse(BigInt(0))
     val useL1DCache = mLen == vMemDataBits
 
     val dis = Module(new VectorDispatcher)
     val vfu = Module(new SaturnRocketFrontend(tl_if.edge))
     val vu = Module(new VectorBackend)
-    val vmu = Module(new VectorMemUnit)
+    val vmu = Module(new VectorMemUnit(p(RocketSGTCMKey).map(_.size)))
 
-    val hella_if = Module(new HellaCacheInterface)
-    val scalar_arb = Module(new Arbiter(new ScalarWrite, 2))
+    sg_if.foreach { sg =>
+      sg.module.io.vec <> vmu.io.sgmem.get
+    }
 
     dis.io.issue <> vfu.io.issue
 
     vfu.io.core <> io.core
     vfu.io.tlb <> io.tlb
+    vfu.io.sg_base := 0.U
+    p(RocketSGTCMKey).foreach { sgtcm =>
+      vfu.io.sg_base := sgtcm.base.U + p(TileKey).tileId.U * sgtcm.size.U
+    }
 
     vu.io.index_access <> vfu.io.index_access
     vu.io.mask_access <> vfu.io.mask_access
@@ -55,6 +68,9 @@ class SaturnRocketUnit(implicit p: Parameters) extends RocketVectorUnit()(p) wit
     vmu.io.enq <> dis.io.mem
 
     vmu.io.scalar_check <> vfu.io.scalar_check
+
+    val hella_if = Module(new HellaCacheInterface)
+    val scalar_arb = Module(new Arbiter(new ScalarWrite, 2))
 
     io.core.backend_busy   := vu.io.busy || tl_if.module.io.mem_busy || hella_if.io.mem_busy || vmu.io.busy
     io.core.set_vxsat      := vu.io.set_vxsat

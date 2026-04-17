@@ -5,6 +5,7 @@
 #
 
 XLEN ?= 64
+CC ?= $(RISCV_GCC)
 
 default: all
 
@@ -32,6 +33,7 @@ bmarks = \
 	vec-fft \
 	vec-iconv2d \
 	vec-igemm \
+	vec-igemm-tcm \
 	vec-jacobi2d \
 	vec-log \
 	vec-mixed_width_mask \
@@ -49,7 +51,14 @@ bmarks = \
 	vec-square-root-approx \
 	vec-transpose-load \
 	vec-transpose-store \
-
+	vec-tcm-transfer \
+	mem_latency_test \
+	mem_latency_test_tcm \
+	advanced_vec_test \
+	chaining_mask_test \
+	chaining_nomask_test \
+	mem_access_micro \
+	
 cpp_bmarks = \
 	vec-tasks \
 	vec-daxpy

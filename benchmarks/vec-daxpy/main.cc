@@ -12,12 +12,33 @@
 #include "util.h"
 
 void axpy_intrinsics(double a, double *dx, double *dy, size_t n) {
+  static int count = 0;
   for (size_t i = 0; i < n;) {
     long gvl = __riscv_vsetvl_e64m8(n - i);
+    
+    unsigned long c1 = read_csr(mcycle);
+    unsigned long i1 = read_csr(minstret);
     vfloat64m8_t v_dx = __riscv_vle64_v_f64m8(&dx[i], gvl);
+    unsigned long c2 = read_csr(mcycle);
+    unsigned long i2 = read_csr(minstret);
+    
     vfloat64m8_t v_dy = __riscv_vle64_v_f64m8(&dy[i], gvl);
+    unsigned long c3 = read_csr(mcycle);
+    unsigned long i3 = read_csr(minstret);
+    
     vfloat64m8_t v_res = __riscv_vfmacc_vf_f64m8(v_dy, a, v_dx, gvl);
+    
+    unsigned long c4 = read_csr(mcycle);
+    unsigned long i4 = read_csr(minstret);
     __riscv_vse64_v_f64m8(&dy[i], v_res, gvl);
+    unsigned long c5 = read_csr(mcycle);
+    unsigned long i5 = read_csr(minstret);
+
+    if (count < 10) {
+      printf("DAXPY block %d (addr_dx=0x%lx): VLE_DX=%lu cyc (%lu ins) | VLE_DY=%lu cyc (%lu ins) | VSE=%lu cyc (%lu ins)\n", 
+             count, (unsigned long)&dx[i], c2-c1, i2-i1, c3-c2, i3-i2, c5-c4, i5-i4);
+      count++;
+    }
     i += gvl;
   }
 }

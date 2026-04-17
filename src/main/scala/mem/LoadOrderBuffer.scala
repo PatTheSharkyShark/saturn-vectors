@@ -31,11 +31,13 @@ class LoadOrderBuffer(nEntries: Int, nRobEntries: Int)(implicit p: Parameters) e
       val data = UInt(mLen.W)
       val tag = UInt(tagBits.W)
     }))
+    val cycle = Input(UInt(64.W))
 
     val replay_liq_id = Output(UInt(log2Ceil(vParams.vliqEntries).W))
     val replay = Decoupled(new MemRequest(mLenB, dmemTagBits))
     val deq = Decoupled(new IFQEntry)
     val deq_data = Output(UInt(mLen.W))
+    val deq_tag = Output(UInt(tagBits.W))
     val busy = Output(Bool())
   })
 
@@ -65,12 +67,17 @@ class LoadOrderBuffer(nEntries: Int, nRobEntries: Int)(implicit p: Parameters) e
     entries(enq_ptr.value) := io.entry
     valids(enq_ptr.value) := io.entry.masked
     enq_ptr.inc()
+    if (saturn.DebugConfig.enablePrints) {
+      printf("time=%d [LROB->RESERVE] tag=%d lsiq=%d head=%d tail=%d masked=%d\n",
+        io.cycle, enq_ptr.value, io.entry.lsiq_id, io.entry.head, io.entry.tail, io.entry.masked.asUInt)
+    }
   }
 
   io.deq.valid := !empty && (valids(deq_ptr.value) || (io.push.fire && io.push.bits.tag === deq_ptr.value))
   io.deq.bits := entries(deq_ptr.value)
   val rob_deq_idx = if (simpleRob) deq_ptr.value else rob_idxs(deq_ptr.value)
   io.deq_data := Mux(valids(deq_ptr.value), rob(rob_deq_idx), io.push.bits.data)
+  io.deq_tag := deq_ptr.value
 
   val rob_push_idx = if (simpleRob) io.push.bits.tag else rob_next
   when (io.push.valid && !(deq_ptr.value === io.push.bits.tag && io.deq.ready)) {
@@ -81,12 +88,14 @@ class LoadOrderBuffer(nEntries: Int, nRobEntries: Int)(implicit p: Parameters) e
       rob_idxs(io.push.bits.tag) := rob_next
       rob_valids(rob_push_idx) := true.B
       rob(rob_push_idx) := io.push.bits.data
+      if (saturn.DebugConfig.enablePrints) printf("time=%d [LROB->PUSH] tag=%d rob_idx=%d\n", io.cycle, io.push.bits.tag, rob_push_idx)
     }
   }
 
   when (io.deq.fire) {
     deq_ptr.inc()
     valids(deq_ptr.value) := false.B
+    if (saturn.DebugConfig.enablePrints) printf("time=%d [LROB->DEQ] tag=%d lsiq=%d head=%d tail=%d\n", io.cycle, deq_ptr.value, entries(deq_ptr.value).lsiq_id, entries(deq_ptr.value).head, entries(deq_ptr.value).tail)
     when (valids(deq_ptr.value) && !entries(deq_ptr.value).masked) {
       rob_valids(rob_deq_idx) := false.B
     }

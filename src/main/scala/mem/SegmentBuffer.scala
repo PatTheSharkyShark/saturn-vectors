@@ -26,6 +26,7 @@ class LoadSegmentBuffer(doubleBuffer: Boolean)(implicit p: Parameters) extends C
       val debug_id = UInt(debugIdSz.W)
     })
     val busy = Output(Bool())
+    val cycle = Input(UInt(64.W))
   })
 
   val nB = if (doubleBuffer) 2 else 1
@@ -127,6 +128,7 @@ class StoreSegmentBuffer(doubleBuffer: Boolean)(implicit p: Parameters) extends 
       val tail = UInt(log2Ceil(mLenB).W)
     })
     val busy = Output(Bool())
+    val cycle = Input(UInt(64.W))
   })
 
   val nB = if (doubleBuffer) 2 else 1
@@ -181,6 +183,9 @@ class StoreSegmentBuffer(doubleBuffer: Boolean)(implicit p: Parameters) extends 
         mask(s) := io.in.bits.mask
       }
     }
+    if (saturn.DebugConfig.enablePrints) {
+      printf("time=%d [SSB->IN] dbg=%d sidx=%d segstart=%d rows=%d\n", io.cycle, io.in.bits.debug_id, io.in.bits.sidx, io.in.bits.segstart, io.in.bits.rows)
+    }
   }
   wcol := ((1.U << (1.U << io.in.bits.eew)) - 1.U)(7,0) << (io.in.bits.sidx << io.in.bits.eew)(log2Ceil(cols)-1,0)
 
@@ -216,6 +221,9 @@ class StoreSegmentBuffer(doubleBuffer: Boolean)(implicit p: Parameters) extends 
   }
 
   when (io.out.fire) {
+    if (saturn.DebugConfig.enablePrints) {
+      printf("time=%d [SSB->OUT] dbg=%d out_row=%d out_sidx=%d\n", io.cycle, out_id(out_sel), out_row(out_sel), out_sidx(out_sel))
+    }
     val sidx_tail = ((out_sidx(out_sel) +& (cols.U >> out_eew(out_sel))) > out_nf(out_sel))
     when ((out_row +& 1.U === out_rows(out_sel)) && sidx_tail) {
       out_sel := (if (doubleBuffer) (!out_sel) else false.B)

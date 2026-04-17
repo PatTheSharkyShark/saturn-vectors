@@ -27,6 +27,7 @@ class AddrGen(implicit p: Parameters) extends CoreModule()(p) with HasVectorPara
     val req = Decoupled(new MemRequest(mLenB, dmemTagBits))
 
     val out = Decoupled(new IFQEntry)
+    val cycle = Input(UInt(64.W))
   })
 
   def getElems(off: UInt, eew: UInt): UInt = {
@@ -119,6 +120,17 @@ class AddrGen(implicit p: Parameters) extends CoreModule()(p) with HasVectorPara
     when (may_clear) {
       io.done := true.B
       r_head := true.B
+    }
+    if (saturn.DebugConfig.enablePrints) {
+      printf("time=%d [LSA->OUT] lsiq=%d debug=%d head=%d tail=%d masked=%d last=%d\n",
+        io.cycle, io.lsiq_id, io.op.debug_id, io.out.bits.head, io.out.bits.tail, io.out.bits.masked.asUInt, io.out.bits.last.asUInt)
+    }
+  }
+
+  when (io.req.fire) {
+    if (saturn.DebugConfig.enablePrints) {
+      printf("time=%d [LSA->REQ] lsiq=%d debug=%d addr=0x%x tag=%d\n",
+        io.cycle, io.lsiq_id, io.op.debug_id, io.req.bits.addr, io.req.bits.tag)
     }
   }
 

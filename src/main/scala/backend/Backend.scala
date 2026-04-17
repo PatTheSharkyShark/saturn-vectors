@@ -64,9 +64,10 @@ class VectorBackend(implicit p: Parameters) extends CoreModule()(p) with HasVect
   val vls = Module(new LoadSequencer)
   val vss = Module(new StoreSequencer)
   val vps = Module(new SpecialSequencer(all_supported_insns))
-  val vxs = xissParams.map(q => q.seqs.map(s =>
-    Module(new ExecuteSequencer(s.insns, maxPipeDepth, s.fus.size)).suggestName(s"vxs${s.name}")
-  ))
+  val vxs = xissParams.map(q => q.seqs.map { s =>
+    val fuNames = s.fus.map(_.getClass.getSimpleName.replace("Factory", ""))
+    Module(new ExecuteSequencer(s.insns, maxPipeDepth, s.fus.size, s.name, fuNames)).suggestName(s"vxs${s.name}")
+  })
 
   val allSeqs = Seq(vls, vss, vps) ++ vxs.flatten
   val allIssQs = Seq(vlissq, vsissq, vpissq) ++ vxissqs
@@ -167,6 +168,10 @@ class VectorBackend(implicit p: Parameters) extends CoreModule()(p) with HasVect
   val issq_stall = Wire(Vec(issGroups.size, Bool()))
   vdq.io.deq.ready := !issq_stall.orR
 
+  // local cycle counter for backend-side debug/compactors
+  val backend_cycle = RegInit(0.U(64.W))
+  backend_cycle := backend_cycle + 1.U
+
   var flat_vxu_id: Int = 0
 
   for ((group, i) <- issGroups.zipWithIndex) {
@@ -181,6 +186,8 @@ class VectorBackend(implicit p: Parameters) extends CoreModule()(p) with HasVect
       val vat = seq.io.vat
 
       seq.io.vat_head := io.vat_head
+      // provide cycle counter for debug prints inside sequencers
+      seq.io.cycle := backend_cycle
 
       val older_issq_wintents = FillInterleaved(egsPerVReg, otherIssqs.map { i =>
         i.io.hazards.map(h => Mux(vatOlder(h.bits.vat, vat) && h.valid, h.bits.wintent, 0.U))
@@ -294,6 +301,9 @@ class VectorBackend(implicit p: Parameters) extends CoreModule()(p) with HasVect
     val rvs1_elem = extractElem(rvs1_data, vxs_iss.rvs1_eew, vxs_iss.eidx)
     val rvs2_elem = extractElem(rvs2_data, vxs_iss.rvs2_eew, vxs_iss.eidx)
     val rvd_elem = extractElem(rvd_data, vxs_iss.rvd_eew, vxs_iss.eidx)
+
+    // Debug: print which vxu index we're connecting to help locate NPE during elaboration
+    Console.err.println(s"[VectorBackend] connecting vxu index $i")
 
     vxu_iss.rvs1_elem := rvs1_elem
     vxu_iss.rvs2_elem := rvs2_elem
@@ -412,11 +422,15 @@ class VectorBackend(implicit p: Parameters) extends CoreModule()(p) with HasVect
   val vmu_mask_q = Module(new Compactor(dLenB, mLenB, Bool(), false))
   val vgu = Module(new GatherUnit)
 
+  vmu_index_q.io.cycle := backend_cycle
+  vmu_mask_q.io.cycle := backend_cycle
+
   vmu_index_q.io.push_data      := vrf.io.vps.rvs2.resp.asTypeOf(Vec(dLenB, UInt(8.W)))
   vmu_index_q.io.push.bits.head := vps.io.iss.bits.eidx << vps.io.iss.bits.rvs2_eew
   vmu_index_q.io.push.bits.tail := Mux(vps.io.iss.bits.tail,
     vps.io.iss.bits.vl << vps.io.iss.bits.rvs2_eew,
     0.U)
+  vmu_index_q.io.push_tag := 0.U
 
   vmu_mask_q.io.push_data       := Mux(vps.io.iss.bits.renvm,
     (vrf.io.vps.rvm.resp >> vps.io.iss.bits.eidx(log2Ceil(dLen)-1,0))(dLenB-1,0),
@@ -424,6 +438,7 @@ class VectorBackend(implicit p: Parameters) extends CoreModule()(p) with HasVect
   ).asBools
   vmu_mask_q.io.push.bits.head  := 0.U
   vmu_mask_q.io.push.bits.tail  := (Mux(vmu_index_q.io.push.bits.tail === 0.U, dLenB.U, vmu_index_q.io.push.bits.tail) - vmu_index_q.io.push.bits.head) >> vps.io.iss.bits.rvs2_eew
+  vmu_mask_q.io.push_tag := 0.U
 
   vps.io.iss.ready := Mux(vps.io.iss.bits.vmu,
     vmu_index_q.io.push.ready && vmu_mask_q.io.push.ready,

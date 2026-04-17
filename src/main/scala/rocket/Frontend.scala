@@ -18,6 +18,7 @@ class SaturnRocketFrontend(edge: TLEdge)(implicit p: Parameters) extends CoreMod
   val io = IO(new Bundle {
     val core = new VectorCoreIO
     val tlb = Flipped(new DCacheTLBPort)
+    val sg_base = Input(UInt(coreMaxAddrBits.W))
 
     val issue = Decoupled(new VectorIssueInst)
 

@@ -24,6 +24,7 @@ class ReorderBuffer[T <: Data](
     }))
     val deq = Decoupled(gen)
     val busy = Output(Bool())
+    val cycle = Input(UInt(64.W))
   })
 
   val valids = RegInit(VecInit.fill(entries)(false.B))
@@ -40,12 +41,14 @@ class ReorderBuffer[T <: Data](
   io.reserve.bits := enq_ptr.value
   when (io.reserve.fire) {
     enq_ptr.inc()
+    if (saturn.DebugConfig.enablePrints) printf("time=%d [RSV->RESERVE] tag=%d\n", io.cycle, enq_ptr.value)
   }
 
   when (io.push.fire) {
     assert(!valids(io.push.bits.tag))
     valids(io.push.bits.tag) := !(io.deq.ready && deq_ptr.value === io.push.bits.tag)
     ram(io.push.bits.tag) := io.push.bits.data
+    if (saturn.DebugConfig.enablePrints) printf("time=%d [RSV->PUSH] tag=%d\n", io.cycle, io.push.bits.tag)
   }
 
   io.deq.valid := !empty && (valids(deq_ptr.value) || (io.push.fire && io.push.bits.tag === deq_ptr.value))
@@ -54,6 +57,7 @@ class ReorderBuffer[T <: Data](
   when (io.deq.fire) {
     deq_ptr.inc()
     valids(deq_ptr.value) := false.B
+    if (saturn.DebugConfig.enablePrints) printf("time=%d [RSV->DEQ] tag=%d\n", io.cycle, deq_ptr.value)
   }
 
   when (io.reserve.fire =/= io.deq.fire) {
