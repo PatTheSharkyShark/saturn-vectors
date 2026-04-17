@@ -414,7 +414,7 @@ class VectorMemUnit(sgSize: Option[BigInt] = None)(implicit p: Parameters) exten
 
   val store_rob = Module(new ReorderBuffer(Bool(), vParams.vsifqEntries))
   sas.io.tag <> store_rob.io.reserve
-  store_rob.io.reserve.ready := sas.io.tag.ready && sas.io.out.fire
+  store_rob.io.reserve.ready := sas.io.req.fire
 
   // connect cycle counter to store reorder buffer for timestamped prints
   store_rob.io.cycle := cycle
